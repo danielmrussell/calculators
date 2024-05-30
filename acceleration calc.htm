@@ -1,0 +1,965 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Physics Calculator</title>
+	<script>
+		function trace(messageToTrace, shouldNewline = true)
+		{
+			document.getElementById("traceWin").innerHTML += `${messageToTrace}${shouldNewline ? '<br>' : ''}`;
+		}
+
+		const minimumSignificantDigits = 8;
+
+		// Why aren't we using associative arrays and modern .filter and for..in, etc.?
+		// Because it makes SUPER ugly and inefficient, hard to structure code.
+		// Believe it or not, zipped arrays using shared indices are still the cleanest code and fastest code.
+
+		// Look up parameter indices by name.
+		// Emulated enum that keeps track of the array indices associated with each parameter name.
+		class parameterIndices
+		{
+			// Private Fields for the actual indices.
+			static #_initialVelocity = 0;
+			static #_acceleration = 1;
+			static #_time = 2;
+			static #_averageVelocity = 3;
+			static #_finalVelocity = 4;
+			static #_distance = 5;
+
+			// Provide getters, but no setters, since this is immutable.
+			static get initialVelocity() { return this.#_initialVelocity; };
+			static get acceleration() { return this.#_acceleration; };
+			static get time() { return this.#_time; };
+			static get averageVelocity() { return this.#_averageVelocity; };
+			static get finalVelocity() { return this.#_finalVelocity; };
+			static get distance() { return this.#_distance; };
+		}
+		// Look up parameter names by index.
+		parameterNames = [
+			"initialVelocity",
+			"acceleration",
+			"time",
+			"averageVelocity",
+			"finalVelocity",
+			"distance"
+		];
+
+		// Look up parameter names by index.
+		parameterMainUnitNames = [
+			"initialVelocityMS",
+			"accelerationMS2",
+			"timeS",
+			"averageVelocityMS",
+			"finalVelocityMS",
+			"distanceM"
+		];
+
+		const parameterValues =
+			[
+				[
+				/* initialVelocity */ undefined,
+				/* acceleration    */ undefined,
+				/* time            */ undefined,
+				/* averageVelocity */ undefined,
+				/* finalVelocity   */ undefined,
+				/* distance        */ undefined
+				],
+				[
+				/* initialVelocity */ undefined,
+				/* acceleration    */ undefined,
+				/* time            */ undefined,
+				/* averageVelocity */ undefined,
+				/* finalVelocity   */ undefined,
+				/* distance        */ undefined
+				]
+			];
+
+		// Is each parameter solved? Those that are input
+		// get defined, but by default, they are solved.
+		const parameterSolveStatus =
+			[
+				'unsolved',
+				'unsolved',
+				'unsolved',
+				'unsolved',
+				'unsolved',
+				'unsolved'
+			];
+
+		const parameterEquations = [
+
+			/* initialVelocity */
+			[
+				"averageVelocity - 1/2 * acceleration * time",
+				"finalVelocity - acceleration * time",
+				"averageVelocity - 1/2 * acceleration * (distance / averageVelocity)"
+				// shouldn't need this because there's a similar equation for time with same 3 defined params: v_f, a, d
+				// "± Math.sqrt(finalVelocity ** 2 - 2 * acceleration * distance)"
+			],
+			/* acceleration    */
+			[
+				"(finalVelocity - initialVelocity) / time",
+				"(finalVelocity ** 2 - initialVelocity ** 2) / (2 * distance)",
+				"2 * (distance - initialVelocity * time) / time ** 2",
+				"2 * (finalVelocity * time - distance) / time ** 2",
+				"2 * (averageVelocity - initialVelocity) / time",
+				"2 * (finalVelocity - averageVelocity) / time"
+			],
+			/* time            */
+			[
+				"averageVelocity / acceleration", // note: when averageVelocity is specified, there is one solution for t
+				"distance / averageVelocity",
+				"(-initialVelocity ± Math.sqrt(initialVelocity ** 2 + 2 * acceleration * distance)) / acceleration", // when either initial or final are specified without average, then there are two solutions
+				"(-finalVelocity ± Math.sqrt(finalVelocity ** 2 - 2 * acceleration * distance)) / acceleration"
+			],
+			/* averageVelocity */
+			[
+				"distance/time",
+				"(initialVelocity + finalVelocity)/2",
+				"initialVelocity + 1/2 * time * acceleration",
+				"finalVelocity - 1/2 * time * acceleration"
+			],
+			/* finalVelocity   */
+			[
+				"2 * averageVelocity - initialVelocity",
+				"averageVelocity + 1/2 * time * acceleration",
+				"initialVelocity + acceleration * time"
+				// shouldn't need this because there's a similar equation for time with same 3 defined params: v_i, a, d
+				// "± Math.sqrt(initialVelocity ** 2 + 2 * acceleration * distance)"
+			],
+			/* distance        */
+			[
+				"averageVelocity * time"
+			]
+		];
+
+		let currentSolution = 0;
+
+		function defineParameter(parameterToDefine, parameterValue)
+		{
+			parameterSolveStatus[parameterIndices[parameterToDefine]] = 'defined';
+			parameterValues[0][parameterIndices[parameterToDefine]] = parameterValue;
+			parameterValues[1][parameterIndices[parameterToDefine]] = parameterValue;
+		}
+
+		function undefineParameter(parameterToUndefine)
+		{
+			parameterSolveStatus[parameterIndices[parameterToUndefine]] = 'unsolved';
+			parameterValues[0][parameterIndices[parameterToUndefine]] = undefined;
+			parameterValues[1][parameterIndices[parameterToUndefine]] = undefined;
+		}
+
+		function clearParameter(parameterToClear)
+		{
+			for (eachFieldOfParameter of document.querySelectorAll(`input[type="text"][data-parameter="${parameterToClear}"]`))
+				eachFieldOfParameter.previousValue = eachFieldOfParameter.value = '';
+
+			undefineParameter(parameterToClear); // .dataset gives us access to data- attributes (custom data added to HTML elements), and we named ours "parameter"
+
+			highlightRows();
+		}
+
+		function defaultParameter(parameterToDefault)
+		{
+			switch (parameterToDefault)
+			{
+				case 'initialVelocity':
+					defaultValue = 0;
+					theField = document.getElementById('initialVelocityMS')
+					theField.previousValue = theField.value = defaultValue;
+					// defineParameter(parameterToDefault, defaultValue);
+					theField.dispatchEvent(new Event('change'));
+					break;
+
+				case 'acceleration':
+				case 'time':
+				case 'averageVelocity':
+				case 'finalVelocity':
+				case 'distance':
+					defaultValue = '';
+					theField = document.getElementById('accelerationMS2')
+					theField.previousValue = theField.value = defaultValue;
+					// defineParameter(parameterToDefault, defaultValue);
+					theField.dispatchEvent(new Event('change'));
+					break;
+			}
+
+			highlightRows();
+		}
+
+		function undefineAll()
+		{
+			for (let eachParam of parameterNames)
+				undefineParameter(eachParam);
+		}
+
+		function clearAll()
+		{
+			clearSolverLog();
+
+			for (let eachParam of parameterNames)
+				clearParameter(eachParam);
+		}
+
+		function clearSolved()
+		{
+			for (let paramCtr in parameterSolveStatus)
+			{
+				if (parameterSolveStatus[paramCtr] == 'solved')
+					clearParameter(parameterNames[paramCtr]);
+			}
+
+		}
+
+		function defaultAll()
+		{
+			clearAll(); // Clear all parameters
+			for (let param of parameterNames)
+				defaultParameter(param); // Set default for initial velocity
+		}
+
+		function highlightRows()
+		{
+			for (let eachParamName in parameterNames)
+			{
+				let rowElement = document.getElementById(parameterMainUnitNames[eachParamName]).parentElement.parentElement;
+				switch (parameterSolveStatus[eachParamName])
+				{
+					case 'solved':
+						rowElement.style.backgroundColor = (currentSolution ? "Pink" : "LightCyan"); // Color based on selected solution
+						break;
+					case 'unsolvable':
+						rowElement.style.backgroundColor = "dimgrey"; // Color based on selected solution
+						break;
+					case 'unsolved':
+					case 'defined':
+						rowElement.style.backgroundColor = ""; // Color based on selected solution
+						break;
+				}
+			}
+		}
+
+
+		// Rules for retaining digits.
+		// 1. At least `minimumSignificantDigits` significant digits.
+		// 2. At least 
+		function formatNumber(numberToFormat)
+		{
+			const minimumSignificantDigits = 6;
+
+			// Calculate scale based on the number magnitude
+			let scale = numberToFormat === 0 ? 1 : Math.pow(10, -Math.floor(Math.log10(Math.abs(numberToFormat))) - 1);
+			let tolerance = Math.max(scale, 1e-12); // A tighter tolerance for identifying near-integers
+			let integerPart = Math.floor(numberToFormat);
+			let fractionalPart = numberToFormat - integerPart;
+
+			// Check if the number is a near-integer within the defined tolerance
+			if (Math.abs(fractionalPart) < tolerance)
+			{
+				if (Math.abs(fractionalPart) < 5e-9)
+				{ // Checking if really close to an integer
+					return integerPart.toString(); // If very close, consider it as integer
+				}
+			}
+
+			// Calculate the number of decimal digits to ensure at least the minimum significant digits
+			let integerDigits = integerPart.toString().includes('-') ? integerPart.toString().length - 1 : integerPart.toString().length;
+			let decimalDigits = minimumSignificantDigits - integerDigits;
+			decimalDigits = Math.max(decimalDigits, 2); // Ensure at least two decimal places
+
+			let formattedNumber = numberToFormat.toFixed(decimalDigits);
+			// Removing unnecessary trailing zeros and possible decimal point
+			return parseFloat(formattedNumber).toString();
+		}
+
+
+		function updateField(elementId, newValue)
+		{
+
+			newValue = Number(newValue); // .toPrecision(8);
+
+			let element = document.getElementById(elementId);
+			if (element)
+			{
+				element.previousValue = element.value;
+				element.value = formatNumber(newValue);
+			}
+		}
+
+
+
+		const yearLengths = /* in seconds */
+		{
+			"Julian": 31557600,
+			"Revised Julian": 31556927.99808,
+			"Gregorian": 31556952,
+			"Mean Tropical": 31556925.216,
+			"March Equinox": 31556941.1136,
+			"Sidereal": 31558149.54
+		};
+
+		// What each unit translated into in the base unit:
+		const conversions = {
+			// Velocity conversions (base unit m/s)
+			'm/s': 1,
+			'km/h': 0.277778,
+			'mi/h': 0.44704,
+			'ft/s': 0.3048,
+			'cm/s': 0.01,
+			'km/s': 1000,
+			'%c': 2997924.58,
+			'kn': 0.51444444444,
+
+			// Acceleration conversions (base unit m/s²)
+			'm/s²': 1,
+			'km/h/s': 0.277778,
+			'mi/h/s': 0.44704,
+			'ft/s²': 0.3048,
+			'Gal': 0.01,
+			'km/s²': 1000,
+			'%c/y': 0.09500044,
+			'Gs': 9.80665,
+
+			// Time conversions (base unit seconds)
+			'M': yearLengths.Gregorian * 1000,  // by default, use Gregorian, as in everyday life
+			'C': yearLengths.Gregorian * 100,
+			'y': yearLengths.Gregorian,
+			'wk': 604800,
+			'd': 86400,
+			'h': 3600,
+			'min': 60,
+			'sec': 1,
+
+			// Distance conversions (base unit meters)
+			'm': 1,
+			'km': 1000,
+			'mi': 1609.344,
+			'ft': 0.3048,
+			'cm': 0.01,
+			'AU': 1.496e+11,
+			'ly': 9.461e+15,
+			'nmi': 1852
+		};
+
+		// Changes the average number of seconds a year is considered, depending on calendar type.
+		// Centuries and millenia follow suit.
+		function changeYearLength(yearLengthToChangeTo)
+		{
+			conversions.M = 10 * (conversions.C = 100 * (conversions.Y = yearLengths[yearLengthToChangeTo]));
+			document.getElementById("daysInYear").innerText = conversions.Y / 86400;
+			document.getElementById("secondsInYear").innerText = conversions.Y;
+		}
+
+		function scaleUnits(valueToScale, unitsToScaleFrom, unitsToScaleTo, shouldTruncate = false)
+		{
+			// Convert from input unit to base unit
+			const baseValue = valueToScale * conversions[unitsToScaleFrom];
+
+			// Convert from base unit to target unit
+			let convertedValue = baseValue / conversions[unitsToScaleTo];
+
+			return shouldTruncate ? Math.trunc(convertedValue) : convertedValue;
+		}
+
+		// When some input is changed, process it and update its related inputs.
+
+		// accumulateTime means, rather than replacing time fields, we instead
+		// add them together with rolled over time. (E.g. normally, 65 seconds => +1 minute and 5 seconds,
+		//  with +1 minute added to the existing minute  field's value).
+		// This is useful to set to false when solve is trying to set the time fields because
+		// it sets the seconds field and calls this to normalize afterward, but
+		// it will accidentally add to the existing fields if we don't set this to false.
+
+		// shouldDefine means, should call defineParameter().
+		// This should NOT be used during solve, because it will trample over Solution 2 values in parameterValues[1].
+		function processParameterInputChange(htmlObj, shouldDefine = true, accumulateTime = true) 
+		{
+			const parameterType = htmlObj.dataset.parameter;
+			const inputUnit = htmlObj.placeholder; // the placeholder text has the unit in it already so we just use that instead of adding another data attribute
+
+			// Get all input fields related to this parameter
+			const relatedInputs = document.querySelectorAll(`input[type="text"][data-parameter="${parameterType}"]`);
+
+			// Clean up and validate input. 			
+
+
+			let inputValue = String(htmlObj.value).trim();
+			// If the user entered blank or nonsense, ignore it by rolling back to previous value.
+
+			// If the user entered a blank, it means they want to clear the parameter, in which
+			// case we call clearParameter() and then get cut out early to avoid the conversion
+			// logic that follows.
+			if (inputValue.length === 0)
+			{
+				clearParameter(parameterType);
+				return;
+			}
+
+			inputValue = Number(inputValue);
+
+			// If user entered some non-numerical nonsense, turn them away.
+			// This is also our user-input validation to prevent hax.
+			if (Number.isNaN(inputValue))
+			{
+				htmlObj.value = String(htmlObj.previousValue || "");
+				return;
+			}
+
+			// Time is treated differently.
+			// Whereas, the other parameters have multiple unit-scaled version of themselves,
+			// time is just one entity, with many parts that work together to specify it.
+			// The user can enter overages in one of the parts, and it will automatically
+			// carryover into the bigger parts. E.g., entering 63 seconds will change to
+			// to 1 minutes and 3 seconds. But internally, everything is done in seconds.
+			// For milliseconds, users can use decimal 0.001 is one ms.
+			if (parameterType.toLowerCase().includes("time"))
+			{
+				let baseUnit = 'sec';
+
+				// First, accumulate total number of seconds from all time parts entered.
+				let timeSec = 0;
+
+				if (accumulateTime)
+					for (eachRelatedInput of relatedInputs)
+					{
+						const eachRelatedInputUnit = eachRelatedInput.placeholder;
+
+						// If accumulateTime is set, we add the existing time components
+						// together to figure out a normalized situation between them.
+						timeSec += scaleUnits(Number(eachRelatedInput.value) || 0, eachRelatedInputUnit, baseUnit);
+					}
+				// However, if accumulateTime was set to true, that means we just want to
+				// focus on the main unit and replace all time fields with it's (rolled over)
+				// value.
+				else
+					timeSec = scaleUnits(inputValue, inputUnit, baseUnit);
+
+				// For computation purposes, we want time in just pure seconds, so commit that now,...
+				if (shouldDefine)
+					defineParameter("time", timeSec);
+
+				// ...However, for displaying purposes, we want the time broken up in a sane,
+				// human-friendly way, between the different units: M : C : Y : wk : d : h : m : s
+				// Note that it is crucial we do this loop in order from M to s, but luckily they are in
+				// that order in the DOM.
+				for (eachRelatedInput of relatedInputs)
+				{
+					const eachDestUnit = eachRelatedInput.placeholder;
+					const timePart = scaleUnits(timeSec, baseUnit, eachDestUnit, /* shouldTruncate = */(eachDestUnit != baseUnit)); // once we get to seconds, we just want to copy the remaining seconds in, not truncate it!
+					eachRelatedInput.previousValue = eachRelatedInput.value = formatNumber(timePart);
+
+					// Subtract the number of seconds that this truncated amount is worth,
+					// so we can solve the remaining parts.
+					timeSec -= scaleUnits(timePart, eachDestUnit, baseUnit); // remove the amount of time (in seconds) lost to this time part
+				}
+			}
+			// For all other paramters, we just have to convert between the
+			// entered unit and the other scaled-unit fields.
+			else
+			{
+				// Determine the base unit depending on the parameter type
+				let baseUnit;
+				if (parameterType.toLowerCase().includes("velocity"))
+					baseUnit = 'm/s'; // base unit for velocity
+				else if (parameterType.toLowerCase().includes("acceleration"))
+					baseUnit = 'm/s²'; // base unit for acceleration
+				else if (parameterType.toLowerCase().includes("distance"))
+					baseUnit = 'm'; // base unit for distance
+
+				// Scale to base unit.
+				const baseValue = scaleUnits(inputValue, inputUnit, baseUnit);
+
+				if (shouldDefine)
+					defineParameter(parameterType, baseValue);
+
+				// For each related unit, scale from base unit to it and display that.
+				// Skip it when it's the same was the one the user typed into! We don't
+				// modify a user's VALID entry. (Invalid ones we already rejected earlier.)
+				for (eachRelatedInput of relatedInputs)
+				{
+					const eachDestUnit = eachRelatedInput.placeholder;
+					eachRelatedInput.previousValue = eachRelatedInput.value = formatNumber(scaleUnits(baseValue, baseUnit, eachDestUnit, /* shouldTruncate = false */));
+				}
+			}
+
+			highlightRows();
+		}
+		function selectSolution(solutionToSelect)
+		{
+			currentSolution = solutionToSelect;
+
+			for (let paramCtr in parameterValues[solutionToSelect])
+			{
+
+				// Inject the answer into the main unit text field...
+				let mainUnitInput = document.getElementById(parameterMainUnitNames[paramCtr]);
+				mainUnitInput.value = (parameterValues[solutionToSelect][paramCtr] == undefined) ? "" : parameterValues[solutionToSelect][paramCtr];
+				mainUnitInput.previousValue = ""; // processParameterInputChange will attempt to revert an empty entry to previousValue, so have to trick it; need this reset anyhow
+
+				// Then fill out the non-main text fields by converting from the main unit input field's value.
+				processParameterInputChange(mainUnitInput, /* shouldDefine = */ false, /* accumulateTime = */ false); // we don't want to accumulate existing time fields; we want to replace them all with the main unit, rolled over of course.
+			}
+
+			highlightRows();
+		}
+
+		function solveUndefinedParameters()
+		{
+			clearSolverLog();
+
+			// Check if exactly 3 of the six parameters are defined.
+			if (parameterValues[0].filter(value => value === undefined).length !== 3)
+			{
+				solverLog("Three of the parameters must be specified, and three must be left blank to be solved.");
+				return;
+			}
+
+			if (parameterValues[0][parameterIndices["initialVelocity"]] === undefined && parameterValues[0][parameterIndices["averageVelocity"]] === undefined && parameterValues[0][parameterIndices["finalVelocity"]] === undefined)
+			{
+				solverLog("You must define at least one of the velocities.")
+				return;
+			}
+			// By default, assume we are going to successfully resolve all equations on the first go.
+			// But as soon as one of them can't be resolved, we will cancel that assumption by flipping this flag.
+			let numSolutions = 1;
+
+			for (let attempts = 1; attempts <= 2 && parameterSolveStatus.includes('unsolved'); ++attempts) // Loop through twice to resolve everything.
+			{
+				for (let paramCtr in parameterValues[0])
+				{
+					if (parameterValues[0][paramCtr] === undefined)
+					{
+						// If the parameter's equations have references to other parameters in it,
+						// then they need to be resolved with actual values.
+						//for (let equationCtr = 0; equationCtr < parameterEquations[paramCtr].length; ++equationCtr)
+						for (let equationCtr in parameterEquations[paramCtr])
+						{
+							let eachEquation0 = eachEquation1 = parameterEquations[paramCtr][equationCtr];
+
+							// Replace all parameter name occurrences with their current values if defined.
+							for (let eachDependencyParameterName of parameterNames)
+							{
+								eachEquation0 = eachEquation0.replaceAll(eachDependencyParameterName, `(${parameterValues[0][parameterIndices[eachDependencyParameterName]]})`); // IMPORTANT: must protect with parentheses esp. against unary negation going into another unary negation, e.g.: `-param` when param is -33 becomes --33 unless we use parentheses, then it's `-(-33)` 
+								eachEquation1 = eachEquation1.replaceAll(eachDependencyParameterName, `(${parameterValues[1][parameterIndices[eachDependencyParameterName]]})`);
+							}
+							// If the equation has been replaced with numerical values successfully, we can use it.
+							if (!eachEquation0.includes("undefined"))
+							{
+								eachEquation0 = eachEquation0.replaceAll("±", "+");
+								eachEquation1 = eachEquation1.replaceAll("±", "-");
+								let val0 = Number(eval(eachEquation0));
+								let val1 = Number(eval(eachEquation1));
+
+								// If the discriminant was negative, we get non-real numbers. NaN.
+								// Set back to undefined, to prevent blanking out the parameter in equations.
+								if (Number.isNaN(val0))
+								{
+									parameterValues[0][paramCtr] = undefined;
+									parameterValues[1][paramCtr] = undefined;
+
+									// But set the 'unsolvable' flag in parameterSolveStatus so we no to mark its row black, etc.
+									parameterSolveStatus[paramCtr] = 'unsolvable';
+
+									// If there are no solutions, we need to know that.
+									numSolutions = 0;
+								}
+								else
+								{
+									parameterValues[0][paramCtr] = String(val0);
+									parameterValues[1][paramCtr] = String(val1);
+
+									parameterSolveStatus[paramCtr] = 'solved';
+
+									// If one of the parameters has multiples values, we record that now.
+									if (parameterValues[0][paramCtr] != parameterValues[1][paramCtr])
+										numSolutions = 2;
+								}
+
+								// Don't look at any more equations for this parameter, since we have already found a solved one.
+								break;
+							}
+						}
+					}
+					// If it's not solved, but it has a valid value in it, then it's being defined by the user (or programmatically through GUI).
+					else if (parameterSolveStatus[paramCtr] != 'solved')
+						parameterSolveStatus[paramCtr] = 'defined';
+				}
+			}
+
+			// Show solution selector when relevant.
+			let solutionSection = document.getElementById("solutionSelectionSection");
+
+			switch (numSolutions)
+			{
+				case 2:
+					solverLog("Two solutions. Please select which you wish to view using the solution selector.")
+					solutionSection.innerHTML =
+						`
+						Select Solution:<br>
+						<input type="radio" id="solution1" name="solution" checked onclick="selectSolution(0)"><label for="solution1">Solution 1</label><br>
+						<input type="radio" id="solution2" name="solution" onclick="selectSolution(1)"><label for="solution2">Solution 2</label>
+						`;
+					break;
+
+				case 1:
+					solverLog("Only one solution.")
+					solutionSection.innerHTML = "";
+					break;
+
+				case 0:
+					solverLog(`No solutions!`)
+					break;
+			}
+
+			// After computing, select the first solution again by default.
+			selectSolution(0);
+
+			highlightRows();
+		}
+
+		function solverLog(logMessage)
+		{
+			document.getElementById('solver_log').innerHTML += logMessage + "<br>";
+		}
+
+		function clearSolverLog()
+		{
+			document.getElementById('solver_log').innerHTML = "";
+		}
+
+		window.onload = function ()
+		{
+
+			// Programmatically select the 'Gregorian' radio button and trigger the change event.
+			const gregorianRadioButton = document.getElementById('yearLengthGregorian');
+			gregorianRadioButton.checked = true;
+			gregorianRadioButton.dispatchEvent(new Event('change'));
+
+			defaultAll();
+		};
+
+
+		function helpToggle()
+		{
+			let helpToggler = document.getElementById("helpToggler");
+			let helpContent = document.getElementById("helpContent");
+
+			helpContainer.classList.toggle('helpExpanded');
+			helpContainer.classList.toggle('helpCollapsed');
+
+			helpToggler.innerText = (helpToggler.innerText == "Help ▲") ? "Help ▼" : "Help ▲";
+		}
+	</script>
+
+	<style>
+		body {
+			display: flex;
+			justify-content: center;
+			padding-top: 50px;
+		}
+
+		.container {
+			display: flex;
+			flex-direction: column;
+			align-items: center;
+			width: fit-content;
+			/* Lets the container fit the content width */
+		}
+
+		#ylSection #solutionSelectionSection {
+			border-width: 1px;
+			border-style: solid;
+			border-color: black;
+		}
+
+		#Instructions {
+			text-align: center;
+			margin-bottom: 20px;
+		}
+
+		th,
+		td {
+			word-wrap: break-word;
+		}
+
+		input[type="text"] {
+			width: 12ch;
+			margin: 0 5px;
+
+		}
+
+		td {
+			width: fit-content;
+			padding: 5px;
+		}
+
+		input[type="button"] {
+			margin-left: 10px;
+		}
+
+		#helpRow {
+			display: table-row;
+		}
+
+		#helpToggler {
+			border: 4px black;
+			border-style: double;
+			border-radius: 10px;
+			display: inline;
+			margin: 10px 10px;
+			padding: 5px 5px;
+			background-color: #818181;
+			cursor: pointer;
+
+		}
+
+		#helpContainer {
+			border: 4px double black;
+			border-radius: 10px;
+			background-color: #818181;
+			overflow: hidden;
+			transition: transform 1s;
+		}
+
+		#helpContent {
+			padding: 10px;
+			font-size: 20px;
+		}
+
+		.helpExpanded {
+			transform: translateY(0%) scaleY(100%);
+		}
+
+		.helpCollapsed {
+			transform: translateY(-50%) scaleY(0%);
+
+		}
+	</style>
+</head>
+
+<body>
+	<table>
+		<tr>
+			<td colspan="18" id="calculatorTitle">Kinematics Calculator</td>
+		</tr>
+
+		<!-- Initial Velocity -->
+		<tr>
+			<td><label for="initialVelocityMS">Initial Velocity:</label></td>
+			<td><input type="text" data-parameter="initialVelocity" id="initialVelocityKnots" onchange="processParameterInputChange(this)" placeholder="kn" tabindex="43"> kn</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="initialVelocity" id="initialVelocityPercentC" onchange="processParameterInputChange(this)" placeholder="%c" tabindex="37"> %c</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="initialVelocity" id="initialVelocityKms" onchange="processParameterInputChange(this)" placeholder="km/s" tabindex="31"> km/s</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="initialVelocity" id="initialVelocityCms" onchange="processParameterInputChange(this)" placeholder="cm/s" tabindex="25"> cm/s</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="initialVelocity" id="initialVelocityFts" onchange="processParameterInputChange(this)" placeholder="ft/s" tabindex="19"> ft/s</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="initialVelocity" id="initialVelocityMph" onchange="processParameterInputChange(this)" placeholder="mi/h" tabindex="13"> mi/h</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="initialVelocity" id="initialVelocityKmph" onchange="processParameterInputChange(this)" placeholder="km/h" tabindex="7"> km/h</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="initialVelocity" id="initialVelocityMS" onchange="processParameterInputChange(this);" placeholder="m/s" tabindex="1"> m/s</td>
+
+			<td><input type="button" data-parameter="initialVelocity" id="undefineInitialVelocity" onclick="clearParameter('initialVelocity')" value="clear" tabindex="49"></td>
+			<td><input type="button" data-parameter="initialVelocity" onclick="defaultParameter('initialVelocity')" value="default" tabindex="55"></td>
+		</tr>
+		<!-- Acceleration -->
+		<tr>
+			<td><label for="accelerationMS2">Acceleration:</label></td>
+			<td><input type="text" data-parameter="acceleration" id="accelerationGs" onchange="processParameterInputChange(this)" placeholder="Gs" tabindex="44"> Gs</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="acceleration" id="accelerationPercentCY" onchange="processParameterInputChange(this)" placeholder="%c/y" tabindex="38"> %c/y</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="acceleration" id="accelerationKms2" onchange="processParameterInputChange(this)" placeholder="km/s²" tabindex="32"> km/s²</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="acceleration" id="accelerationGal" onchange="processParameterInputChange(this)" placeholder="Gal" tabindex="26"> Gal</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="acceleration" id="accelerationFts2" onchange="processParameterInputChange(this)" placeholder="ft/s²" tabindex="20"> ft/s²</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="acceleration" id="accelerationMphS" onchange="processParameterInputChange(this)" placeholder="mi/h/s" tabindex="14"> mi/h/s</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="acceleration" id="accelerationKmphS" onchange="processParameterInputChange(this)" placeholder="km/h/s" tabindex="8"> km/h/s</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="acceleration" id="accelerationMS2" onchange="processParameterInputChange(this)" placeholder="m/s²" tabindex="2"> m/s²</td>
+
+			<td><input type="button" data-parameter="acceleration" id="undefineAcceleration" onclick="clearParameter('acceleration')" value="clear" tabindex="50"></td>
+			<td><input type="button" data-parameter="acceleration" onclick="defaultParameter('acceleration')" value="default" tabindex="56"></td>
+		</tr>
+		<!-- Time -->
+		<tr>
+			<td><label for="timeH">Time:</label></td>
+			<td><input type="text" data-parameter="time" id="timeM" onchange="processParameterInputChange(this)" placeholder="M" tabindex="45"> M</td>
+			<td>:</td>
+			<td><input type="text" data-parameter="time" id="timeC" onchange="processParameterInputChange(this)" placeholder="C" tabindex="39"> C</td>
+			<td>:</td>
+			<td><input type="text" data-parameter="time" id="timeY" onchange="processParameterInputChange(this)" placeholder="y" tabindex="33"> y</td>
+			<td>:</td>
+			<td><input type="text" data-parameter="time" id="timeWk" onchange="processParameterInputChange(this)" placeholder="wk" tabindex="27"> wk</td>
+			<td>:</td>
+			<td><input type="text" data-parameter="time" id="timeD" onchange="processParameterInputChange(this)" placeholder="d" tabindex="21"> d</td>
+			<td>:</td>
+			<td><input type="text" data-parameter="time" id="timeH" onchange="processParameterInputChange(this)" placeholder="h" tabindex="15"> h</td>
+			<td>:</td>
+			<td><input type="text" data-parameter="time" id="timeMin" onchange="processParameterInputChange(this)" placeholder="min" tabindex="9"> min</td>
+			<td>:</td>
+			<td><input type="text" data-parameter="time" id="timeS" onchange="processParameterInputChange(this)" placeholder="sec" tabindex="3"> sec</td>
+
+			<td><input type="button" data-parameter="time" id="undefineTime" onclick="clearParameter('time')" value="clear" tabindex="51"></td>
+			<td><input type="button" data-parameter="time" onclick="defaultParameter('time')" value="default" tabindex="57"></td>
+		</tr>
+
+		<!-- Average Velocity -->
+		<tr>
+			<td><label for="averageVelocityMS">Average Velocity:</label></td>
+			<td><input type="text" data-parameter="averageVelocity" id="averageVelocityKnots" onchange="processParameterInputChange(this)" placeholder="kn" tabindex="46"> kn</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="averageVelocity" id="averageVelocityPercentC" onchange="processParameterInputChange(this)" placeholder="%c" tabindex="40"> %c</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="averageVelocity" id="averageVelocityKms" onchange="processParameterInputChange(this)" placeholder="km/s" tabindex="34"> km/s</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="averageVelocity" id="averageVelocityCms" onchange="processParameterInputChange(this)" placeholder="cm/s" tabindex="28"> cm/s</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="averageVelocity" id="averageVelocityFts" onchange="processParameterInputChange(this)" placeholder="ft/s" tabindex="22"> ft/s</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="averageVelocity" id="averageVelocityMph" onchange="processParameterInputChange(this)" placeholder="mi/h" tabindex="16"> mi/h</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="averageVelocity" id="averageVelocityKmph" onchange="processParameterInputChange(this)" placeholder="km/h" tabindex="10"> km/h</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="averageVelocity" id="averageVelocityMS" onchange="processParameterInputChange(this)" placeholder="m/s" tabindex="4"> m/s</td>
+
+			<td><input type="button" data-parameter="averageVelocity" id="undefineAverageVelocity" onclick="clearParameter('averageVelocity')" value="clear" tabindex="52"></td>
+			<td><input type="button" data-parameter="averageVelocity" onclick="defaultParameter('averageVelocity')" value="default" tabindex="58"></td>
+		</tr>
+		<!-- Final Velocity -->
+		<tr>
+			<td><label for="finalVelocityMS">Final Velocity:</label></td>
+			<td><input type="text" data-parameter="finalVelocity" id="finalVelocityKnots" onchange="processParameterInputChange(this)" placeholder="kn" tabindex="47"> kn</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="finalVelocity" id="finalVelocityPercentC" onchange="processParameterInputChange(this)" placeholder="%c" tabindex="41"> %c</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="finalVelocity" id="finalVelocityKms" onchange="processParameterInputChange(this)" placeholder="km/s" tabindex="35"> km/s</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="finalVelocity" id="finalVelocityCms" onchange="processParameterInputChange(this)" placeholder="cm/s" tabindex="29"> cm/s</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="finalVelocity" id="finalVelocityFts" onchange="processParameterInputChange(this)" placeholder="ft/s" tabindex="23"> ft/s</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="finalVelocity" id="finalVelocityMph" onchange="processParameterInputChange(this)" placeholder="mi/h" tabindex="17"> mi/h</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="finalVelocity" id="finalVelocityKmph" onchange="processParameterInputChange(this)" placeholder="km/h" tabindex="11"> km/h</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="finalVelocity" id="finalVelocityMS" onchange="processParameterInputChange(this)" placeholder="m/s" tabindex="5"> m/s</td>
+
+			<td><input type="button" data-parameter="finalVelocity" id="undefineFinalVelocity" onclick="clearParameter('finalVelocity')" value="clear" tabindex="53"></td>
+			<td><input type="button" data-parameter="finalVelocity" onclick="defaultParameter('finalVelocity')" value="default" tabindex="59"></td>
+		</tr>
+		<!-- Distance -->
+		<tr>
+			<td><label for="distanceM">Distance:</label></td>
+			<td><input type="text" data-parameter="distance" id="distanceNmi" onchange="processParameterInputChange(this)" placeholder="nmi" tabindex="48"> nmi</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="distance" id="distanceLy" onchange="processParameterInputChange(this)" placeholder="ly" tabindex="42"> ly</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="distance" id="distanceAu" onchange="processParameterInputChange(this)" placeholder="AU" tabindex="36"> AU</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="distance" id="distanceCm" onchange="processParameterInputChange(this)" placeholder="cm" tabindex="30"> cm</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="distance" id="distanceFt" onchange="processParameterInputChange(this)" placeholder="ft" tabindex="24"> ft</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="distance" id="distanceMi" onchange="processParameterInputChange(this)" placeholder="mi" tabindex="18"> mi</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="distance" id="distanceKm" onchange="processParameterInputChange(this)" placeholder="km" tabindex="12"> km</td>
+			<td class="equal">=</td>
+			<td><input type="text" data-parameter="distance" id="distanceM" onchange="processParameterInputChange(this)" placeholder="m" tabindex="6"> m</td>
+
+			<td><input type="button" data-parameter="distance" id="undefineDistance" onclick="clearParameter('distance')" value="clear" tabindex="54"></td>
+			<td><input type="button" data-parameter="distance" onclick="defaultParameter('distance')" value="default" tabindex="60"></td>
+		</tr>
+
+		<tr>
+			<td colspan="2" id="ylSection">
+				Length of Year:<br>
+				<b id="daysInYear"></b> days average.<br>
+				<b id="secondsInYear"></b> seconds average.<br>
+				<input type="radio" id="yearLengthJulian" name="yearLength" onchange="changeYearLength(value)" value="Julian"><label for="yearLengthJulian">Julian</label><br>
+				<input type="radio" id="yearLengthRevisedJulian" name="yearLength" onchange="changeYearLength(value)" value="Revised Julian"><label for="yearLengthRevisedJulian">Revised Julian</label><br>
+				<input type="radio" id="yearLengthGregorian" name="yearLength" onchange="changeYearLength(value)" value="Gregorian"><label for="yearLengthGregorian">Gregorian</label><br>
+				<input type="radio" id="yearLengthMeanTropical" name="yearLength" onchange="changeYearLength(value)" value="Mean Tropical"><label for="yearLengthMeanTropical">Mean Tropical</label><br>
+				<input type="radio" id="yearLengthMarchEquinox" name="yearLength" onchange="changeYearLength(value)" value="March Equinox"><label for="yearLengthMarchEquinox">March Equinox</label><br>
+				<input type="radio" id="yearLengthSidereal" name="yearLength" onchange="changeYearLength(value)" value="Sidereal"><label for="yearLengthSidereal">Sidereal</label><br>
+			</td>
+			<td colspan="1">
+				<button style="width: 100%; display: block;" id="default_all" onclick="defaultAll()">Default All</button><br>
+				<button style="width: 100%; display: block;" id="clear_all" onclick="clearAll()">Clear All</button><br>
+				<button style="width: 100%; display: block;" id="clear_solved" onclick="clearSolved()">Clear Solved</button>
+			</td>
+			<td colspan="9" id="solver_log"></td>
+
+			<!-- Solution Selector (Hidden initially) -->
+			<td colspan="3" id="solutionSelectionSection">
+			</td>
+			<td colspan="3">
+				<button style="width: 100%; display: block;" id="solve" onclick="solveUndefinedParameters()">Solve</button>
+			</td>
+		</tr>
+
+		<tr id="helpRow">
+			<td colspan="18">
+				<span id="helpToggler" onclick="helpToggle()">Help ▼</span>
+				<div id="helpContainer" class="helpCollapsed">
+					<div id="helpContent">
+						Enter values for 3 out of the 6 parameters. The
+						remaining 3 parameters will be automatically solved
+						for you when you click "Solve." To have a parameter
+						solved, ensure that all fields for that parameter are
+						left blank. You can use the "clear" button on the right
+						side of each parameter's row to quickly clear all
+						fields for that parameter, or "default" to set a
+						parameter back to its default.<br><br>
+
+
+						Some kinematic problems have two solutions due a square
+						root operation. You can switch between solutions using
+						the solution selector that appears in that case. You
+						will be notified if a problem has zero solutions.<br><br>
+
+						Use the tab key to quickly move down the columns. For
+						tabbing order, we start with the SI units, in the
+						rightmost column, and move left to columns of ever more
+						stranger units. (Exception is gs for acceleration,
+						which is exceedingly useful, but on the far left.)<br><br>
+
+						For most parameters, the input fields are just
+						equivalent units that update automatically when you
+						modify any of them. So you get a bonus unit converter!<br><br>
+
+						Unlike the other parameters, for the time row, it is
+						made up of different components that together specify
+						total time value. If you enter more than the normalized
+						amount for a component, it will spill over and be added
+						into the next larger component; e.g. entering 65 in the
+						seconds field will cause 1 minute to be added to the
+						minute field and the seconds field will change to 5. So
+						you get a bonus time components tool!<br><br>
+
+						Note that the year parameter accounts for leap years,
+						meaning a non-integer number of days. For instance, if
+						you enter 365 days, it will convert to 52 weeks and 1
+						day (52 x 7 + 1 = 365), but it won't round up to the
+						next full year! By selecting the "Length of Year", you
+						can treat 1 year as equal to slightly different
+						definitions, depending on the calendar system chosen.
+						You get a bonus solarish calendar lengths converter!
+					</div>
+				</div>
+			</td>
+		</tr>
+	</table>
+	</div>
+</body>
+
+</html>
